@@ -1,5 +1,7 @@
+import serverless from 'serverless-http';
 import net from 'net';
 import express from 'express';
+import 'dotenv/config';
 import cors from 'cors';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
@@ -266,6 +268,10 @@ async function connectDatabase() {
     return;
   }
 
+  if (process.env.NETLIFY) {
+    throw new Error('MONGODB_URI must be configured on Netlify.');
+  }
+
   if (await portOpen(27017)) {
     await mongoose.connect(LOCAL_URI);
     dbMode = 'local';
@@ -427,14 +433,46 @@ async function ensureDefaultUser() {
   console.log(`Default login ready: ${email}`);
 }
 
-connectDatabase()
+const databaseReady = connectDatabase()
   .then(async () => {
-    await ensureDefaultUser();
-    app.listen(PORT, () => {
-      console.log(`Zipher API on http://localhost:${PORT} (${dbMode})`);
-    });
-  })
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
+    // Keep the demo account local only.
+    if (!process.env.NETLIFY) {
+      await ensureDefaultUser();
+    }
+
+    console.log(`Zipher database connected (${dbMode})`);
   });
+
+if (!process.env.NETLIFY) {
+  databaseReady
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`Zipher API on http://localhost:${PORT} (${dbMode})`);
+      });
+    })
+    .catch((error) => {
+      console.error('Database startup failed:', error);
+      process.exit(1);
+    });
+}
+
+const netlifyHandler = serverless(app);
+
+export const handler = async (event, context) => {
+  try {
+    await databaseReady;
+    return await netlifyHandler(event, context);
+  } catch (error) {
+    console.error('Netlify API error:', error);
+
+    return {
+      statusCode: 500,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message: 'Backend initialization failed. Check function logs.',
+      }),
+    };
+  }
+};
